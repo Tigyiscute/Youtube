@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Stream Portal</title>
+    <style>
+        body { background: #0b0b0b; color: #00ffcc; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .box { width: 90%; max-width: 900px; }
+        input { width: 70%; padding: 15px; border-radius: 5px; border: 1px solid #00ffcc; background: #1a1a1a; color: white; }
+        button { padding: 15px 30px; background: #00ffcc; color: black; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; }
+        .screen { margin-top: 20px; position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; background: black; border: 2px solid #333; }
+        .screen iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <center>
+            <h2>🔴 Live Stream Gateway</h2>
+            <input type="text" id="url" placeholder="Paste YouTube Live Link...">
+            <button onclick="play()">Go Live</button>
+        </center>
+        <div class="screen">
+            <iframe id="vid" src="about:blank" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+        </div>
+    </div>
+    <script>
+        function play() {
+            let val = document.getElementById('url').value;
+            let id = "";
+            if (val.includes("v=")) id = val.split("v=")[1].split("&")[0];
+            else if (val.includes("be/")) id = val.split("be/")[1];
+            else id = val;
+            // Force the Live-specific embed path
+            document.getElementById('vid').src = "https://www.youtube-nocookie.com/embed/" + id + "?autoplay=1&live=1";
+        }
+    </script>
+</body>
+</html>
