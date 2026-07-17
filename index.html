@@ -1,38 +1,531 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Stream Portal</title>
-    <style>
-        body { background: #0b0b0b; color: #00ffcc; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        .box { width: 90%; max-width: 900px; }
-        input { width: 70%; padding: 15px; border-radius: 5px; border: 1px solid #00ffcc; background: #1a1a1a; color: white; }
-        button { padding: 15px 30px; background: #00ffcc; color: black; font-weight: bold; border: none; border-radius: 5px; cursor: pointer; }
-        .screen { margin-top: 20px; position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; background: black; border: 2px solid #333; }
-        .screen iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
-    </style>
-</head>
-<body>
-    <div class="box">
-        <center>
-            <h2>🔴 Live Stream Gateway</h2>
-            <input type="text" id="url" placeholder="Paste YouTube Live Link...">
-            <button onclick="play()">Go Live</button>
-        </center>
-        <div class="screen">
-            <iframe id="vid" src="about:blank" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+import { useState, useEffect, useRef } from "react";
+import { Play, Trash2, Check, RotateCcw, Film, Link as LinkIcon, ArrowUp, ArrowDown } from "lucide-react";
+
+const STORAGE_KEY = "watch-queue:videos";
+
+function extractVideoId(url) {
+  try {
+    const u = new URL(url.trim());
+    if (u.hostname.includes("youtu.be")) {
+      return u.pathname.slice(1).split("/")[0];
+    }
+    if (u.hostname.includes("youtube.com")) {
+      if (u.pathname === "/watch") return u.searchParams.get("v");
+      if (u.pathname.startsWith("/shorts/")) return u.pathname.split("/")[2];
+      if (u.pathname.startsWith("/embed/")) return u.pathname.split("/")[2];
+      if (u.pathname.startsWith("/live/")) return u.pathname.split("/")[2];
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function Ticket({ video, index, total, onWatch, onToggleWatched, onRemove, onMove }) {
+  return (
+    <div
+      className={`ticket ${video.watched ? "ticket--watched" : ""}`}
+      style={{ animationDelay: `${index * 40}ms` }}
+    >
+      <div className="ticket__stub">
+        <span className="ticket__num">{String(index + 1).padStart(2, "0")}</span>
+      </div>
+      <div className="ticket__perf" aria-hidden="true" />
+      <div className="ticket__body">
+        <div className="ticket__thumbWrap">
+          {video.thumbnail ? (
+            <img src={video.thumbnail} alt="" className="ticket__thumb" />
+          ) : (
+            <div className="ticket__thumb ticket__thumb--empty">
+              <Film size={22} strokeWidth={1.5} />
+            </div>
+          )}
         </div>
+        <div className="ticket__info">
+          <p className="ticket__title">{video.title || video.url}</p>
+          <p className="ticket__meta">
+            {video.watched ? "Watched" : "Queued"} · Admit One
+          </p>
+        </div>
+        <div className="ticket__actions">
+          <button
+            className="ticket__btn ticket__btn--primary"
+            onClick={() => onWatch(video)}
+            aria-label="Open in new tab"
+            title="Open in new tab"
+          >
+            <Play size={16} strokeWidth={2} fill="currentColor" />
+          </button>
+          <button
+            className="ticket__btn"
+            onClick={() => onToggleWatched(video.id)}
+            aria-label={video.watched ? "Mark as unwatched" : "Mark as watched"}
+            title={video.watched ? "Mark as unwatched" : "Mark as watched"}
+          >
+            {video.watched ? <RotateCcw size={15} strokeWidth={2} /> : <Check size={15} strokeWidth={2} />}
+          </button>
+          <button
+            className="ticket__btn ticket__btn--up"
+            onClick={() => onMove(video.id, -1)}
+            disabled={index === 0}
+            aria-label="Move up"
+            title="Move up"
+          >
+            <ArrowUp size={14} strokeWidth={2} />
+          </button>
+          <button
+            className="ticket__btn ticket__btn--up"
+            onClick={() => onMove(video.id, 1)}
+            disabled={index === total - 1}
+            aria-label="Move down"
+            title="Move down"
+          >
+            <ArrowDown size={14} strokeWidth={2} />
+          </button>
+          <button
+            className="ticket__btn ticket__btn--danger"
+            onClick={() => onRemove(video.id)}
+            aria-label="Remove from queue"
+            title="Remove"
+          >
+            <Trash2 size={15} strokeWidth={2} />
+          </button>
+        </div>
+      </div>
     </div>
-    <script>
-        function play() {
-            let val = document.getElementById('url').value;
-            let id = "";
-            if (val.includes("v=")) id = val.split("v=")[1].split("&")[0];
-            else if (val.includes("be/")) id = val.split("be/")[1];
-            else id = val;
-            // Force the Live-specific embed path
-            document.getElementById('vid').src = "https://www.youtube-nocookie.com/embed/" + id + "?autoplay=1&live=1";
+  );
+}
+
+export default function WatchQueue() {
+  const [videos, setVideos] = useState([]);
+  const [input, setInput] = useState("");
+  const [status, setStatus] = useState({ type: "idle", message: "" });
+  const [loaded, setLoaded] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await window.storage.get(STORAGE_KEY, false);
+        if (result && result.value) {
+          setVideos(JSON.parse(result.value));
         }
-    </script>
-</body>
-</html>
+      } catch {
+        // no saved queue yet
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set(STORAGE_KEY, JSON.stringify(videos), false).catch(() => {});
+  }, [videos, loaded]);
+
+  async function handleAdd(e) {
+    e.preventDefault();
+    const url = input.trim();
+    if (!url) return;
+    const id = extractVideoId(url);
+    if (!id) {
+      setStatus({ type: "error", message: "That doesn't look like a YouTube link. Paste a full youtube.com or youtu.be URL." });
+      return;
+    }
+    if (videos.some((v) => v.videoId === id)) {
+      setStatus({ type: "error", message: "That video is already in your queue." });
+      return;
+    }
+    const tempEntry = {
+      id: `${id}-${Date.now()}`,
+      videoId: id,
+      url,
+      title: null,
+      thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+      watched: false,
+    };
+    setVideos((prev) => [...prev, tempEntry]);
+    setInput("");
+    setStatus({ type: "idle", message: "" });
+    inputRef.current?.focus();
+
+    try {
+      const res = await fetch(
+        `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${id}`)}&format=json`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setVideos((prev) =>
+          prev.map((v) => (v.id === tempEntry.id ? { ...v, title: data.title } : v))
+        );
+      }
+    } catch {
+      // title stays null, thumbnail still works
+    }
+  }
+
+  function handleWatch(video) {
+    window.open(video.url, "_blank", "noopener,noreferrer");
+    setVideos((prev) => prev.map((v) => (v.id === video.id ? { ...v, watched: true } : v)));
+  }
+
+  function handleToggleWatched(id) {
+    setVideos((prev) => prev.map((v) => (v.id === id ? { ...v, watched: !v.watched } : v)));
+  }
+
+  function handleRemove(id) {
+    setVideos((prev) => prev.filter((v) => v.id !== id));
+  }
+
+  function handleMove(id, dir) {
+    setVideos((prev) => {
+      const idx = prev.findIndex((v) => v.id === id);
+      const next = idx + dir;
+      if (next < 0 || next >= prev.length) return prev;
+      const copy = [...prev];
+      [copy[idx], copy[next]] = [copy[next], copy[idx]];
+      return copy;
+    });
+  }
+
+  const queued = videos.filter((v) => !v.watched);
+  const watched = videos.filter((v) => v.watched);
+
+  return (
+    <div className="board">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+        .board {
+          min-height: 100vh;
+          background: #171512;
+          background-image:
+            radial-gradient(circle at 15% 8%, rgba(232,163,61,0.06), transparent 40%),
+            radial-gradient(circle at 85% 92%, rgba(193,68,60,0.05), transparent 40%);
+          color: #F4EFE6;
+          font-family: 'IBM Plex Mono', ui-monospace, monospace;
+          padding: 40px 16px 80px;
+          box-sizing: border-box;
+        }
+        .board * { box-sizing: border-box; }
+
+        .marquee {
+          max-width: 680px;
+          margin: 0 auto 32px;
+        }
+        .marquee__eyebrow {
+          font-size: 11px;
+          letter-spacing: 0.28em;
+          text-transform: uppercase;
+          color: #E8A33D;
+          margin: 0 0 6px;
+        }
+        .marquee__title {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 700;
+          font-size: clamp(34px, 6vw, 52px);
+          letter-spacing: 0.01em;
+          text-transform: uppercase;
+          margin: 0 0 6px;
+          line-height: 1.02;
+          color: #F4EFE6;
+        }
+        .marquee__title span { color: #C1443C; }
+        .marquee__sub {
+          font-size: 13px;
+          color: #B8AFA0;
+          margin: 0;
+          line-height: 1.5;
+        }
+
+        .addForm {
+          max-width: 680px;
+          margin: 24px auto 8px;
+          display: flex;
+          gap: 8px;
+          background: #1F1C18;
+          border: 1px solid #34302A;
+          border-radius: 10px;
+          padding: 8px;
+        }
+        .addForm__icon {
+          display: flex;
+          align-items: center;
+          padding-left: 8px;
+          color: #6E6659;
+        }
+        .addForm input {
+          flex: 1;
+          background: transparent;
+          border: none;
+          outline: none;
+          color: #F4EFE6;
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 14px;
+          padding: 10px 4px;
+        }
+        .addForm input::placeholder { color: #6E6659; }
+        .addForm button {
+          background: #E8A33D;
+          color: #1A1712;
+          border: none;
+          border-radius: 6px;
+          padding: 0 20px;
+          font-family: 'Oswald', sans-serif;
+          font-weight: 600;
+          font-size: 13px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          cursor: pointer;
+          transition: background 0.15s ease;
+        }
+        .addForm button:hover { background: #F2B458; }
+        .addForm button:focus-visible, .ticket__btn:focus-visible, .addForm input:focus-visible {
+          outline: 2px solid #E8A33D;
+          outline-offset: 2px;
+        }
+
+        .status {
+          max-width: 680px;
+          margin: 8px auto 0;
+          font-size: 12.5px;
+          color: #D9736A;
+          min-height: 16px;
+        }
+
+        .section {
+          max-width: 680px;
+          margin: 36px auto 0;
+        }
+        .section__head {
+          display: flex;
+          align-items: baseline;
+          gap: 10px;
+          margin-bottom: 14px;
+        }
+        .section__head h2 {
+          font-family: 'Oswald', sans-serif;
+          font-size: 14px;
+          letter-spacing: 0.18em;
+          text-transform: uppercase;
+          color: #B8AFA0;
+          margin: 0;
+          font-weight: 600;
+        }
+        .section__head .count {
+          font-size: 12px;
+          color: #6E6659;
+        }
+        .section__rule {
+          flex: 1;
+          height: 1px;
+          background: repeating-linear-gradient(90deg, #34302A 0 6px, transparent 6px 12px);
+        }
+
+        .empty {
+          border: 1px dashed #34302A;
+          border-radius: 10px;
+          padding: 28px 20px;
+          text-align: center;
+          color: #6E6659;
+          font-size: 13px;
+          line-height: 1.6;
+        }
+
+        .ticket {
+          display: flex;
+          background: #1F1C18;
+          border: 1px solid #34302A;
+          border-radius: 10px;
+          overflow: hidden;
+          margin-bottom: 12px;
+          animation: rise 0.35s ease both;
+        }
+        @keyframes rise {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ticket { animation: none; }
+        }
+        .ticket--watched { opacity: 0.55; }
+        .ticket--watched .ticket__title { text-decoration: line-through; text-decoration-color: #5A5347; }
+
+        .ticket__stub {
+          width: 44px;
+          flex-shrink: 0;
+          background: #171512;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .ticket__num {
+          font-family: 'Oswald', sans-serif;
+          font-weight: 600;
+          font-size: 15px;
+          color: #4A443A;
+          writing-mode: vertical-rl;
+          transform: rotate(180deg);
+          letter-spacing: 0.1em;
+        }
+        .ticket__perf {
+          width: 0;
+          border-left: 2px dashed #34302A;
+          position: relative;
+        }
+
+        .ticket__body {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 10px 12px;
+          flex: 1;
+          min-width: 0;
+        }
+        .ticket__thumbWrap { flex-shrink: 0; }
+        .ticket__thumb {
+          width: 84px;
+          height: 47px;
+          object-fit: cover;
+          border-radius: 5px;
+          background: #12100D;
+          display: block;
+        }
+        .ticket__thumb--empty {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #4A443A;
+        }
+        .ticket__info { flex: 1; min-width: 0; }
+        .ticket__title {
+          font-family: 'Oswald', sans-serif;
+          font-size: 14px;
+          font-weight: 500;
+          color: #F4EFE6;
+          margin: 0 0 4px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .ticket__meta {
+          font-size: 11px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: #6E6659;
+          margin: 0;
+        }
+        .ticket__actions {
+          display: flex;
+          gap: 6px;
+          flex-shrink: 0;
+        }
+        .ticket__btn {
+          width: 30px;
+          height: 30px;
+          border-radius: 6px;
+          border: 1px solid #34302A;
+          background: #171512;
+          color: #B8AFA0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: border-color 0.15s ease, color 0.15s ease;
+        }
+        .ticket__btn:hover { border-color: #4A443A; color: #F4EFE6; }
+        .ticket__btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .ticket__btn--primary {
+          background: #E8A33D;
+          border-color: #E8A33D;
+          color: #1A1712;
+        }
+        .ticket__btn--primary:hover { background: #F2B458; border-color: #F2B458; color: #1A1712; }
+        .ticket__btn--danger:hover { border-color: #C1443C; color: #D9736A; }
+
+        @media (max-width: 480px) {
+          .ticket__actions { flex-wrap: wrap; justify-content: flex-end; }
+          .ticket__thumb { width: 64px; height: 36px; }
+        }
+      `}</style>
+
+      <div className="marquee">
+        <p className="marquee__eyebrow">Now Showing · Later</p>
+        <h1 className="marquee__title">
+          Watch <span>Queue</span>
+        </h1>
+        <p className="marquee__sub">
+          Paste a YouTube link, save it for later, and open it in a new tab whenever you're ready. Nothing plays here — this is just your ticket booth.
+        </p>
+      </div>
+
+      <form className="addForm" onSubmit={handleAdd}>
+        <span className="addForm__icon">
+          <LinkIcon size={16} strokeWidth={2} />
+        </span>
+        <input
+          ref={inputRef}
+          type="text"
+          inputMode="url"
+          placeholder="Paste a youtube.com or youtu.be link…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
+        <button type="submit">Add to queue</button>
+      </form>
+      {status.message && <p className="status">{status.message}</p>}
+
+      <div className="section">
+        <div className="section__head">
+          <h2>Up Next</h2>
+          <span className="section__rule" />
+          <span className="count">{queued.length}</span>
+        </div>
+        {queued.length === 0 ? (
+          <div className="empty">Your queue is empty. Add a link above to save it for later.</div>
+        ) : (
+          queued.map((v, i) => (
+            <Ticket
+              key={v.id}
+              video={v}
+              index={i}
+              total={queued.length}
+              onWatch={handleWatch}
+              onToggleWatched={handleToggleWatched}
+              onRemove={handleRemove}
+              onMove={(id, dir) => {
+                const ids = queued.map((q) => q.id);
+                const pos = ids.indexOf(id);
+                const targetPos = pos + dir;
+                if (targetPos < 0 || targetPos >= ids.length) return;
+                handleMove(id, videos.findIndex((x) => x.id === ids[targetPos]) - videos.findIndex((x) => x.id === id));
+              }}
+            />
+          ))
+        )}
+      </div>
+
+      {watched.length > 0 && (
+        <div className="section">
+          <div className="section__head">
+            <h2>Watched</h2>
+            <span className="section__rule" />
+            <span className="count">{watched.length}</span>
+          </div>
+          {watched.map((v, i) => (
+            <Ticket
+              key={v.id}
+              video={v}
+              index={i}
+              total={watched.length}
+              onWatch={handleWatch}
+              onToggleWatched={handleToggleWatched}
+              onRemove={handleRemove}
+              onMove={() => {}}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
